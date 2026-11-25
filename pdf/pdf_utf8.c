@@ -27,45 +27,97 @@
 #include "pdf_types.h"
 #include "pdf_stack.h"
 
-#ifdef HAVE_LIBIDN
-#  include <stringprep.h>
+#ifdef HAVE_LIBIDN2
+#  include <idn2.h>
 #  include <errno.h>
+#  include <iconv.h>
+#  include <langinfo.h>
+#  include <locale.h>
+#  include <stdlib.h>
 /* Convert a string from the current locale's character set to UTF-8.
+ * Uses iconv (POSIX standard, part of glibc) to perform the conversion,
+ * replacing the former stringprep_locale_to_utf8() call that was lost
+ * when migrating from libidn to libidn2.
  * <string> .locale_to_utf8 <string> */
 int
 locale_to_utf8(pdf_context *ctx, pdf_string *input, pdf_string **output)
 {
-    char *out = NULL;
+    iconv_t cd;
+    const char *codeset;
+    char *inbuf, *outbuf;
+    size_t inbytes, outbytes, outlen;
+    char *utf8buf = NULL;
     int code;
 
-    out = stringprep_locale_to_utf8((const char *)input->data);
-    if (out == NULL) {
-        /* This function is intended to be used on strings whose
-         * character set is unknown, so it's not an error if the
-         * input contains invalid characters.  Just return the input
-         * string unchanged.
-         *
-         * Sadly, EINVAL from stringprep_locale_to_utf8 can mean
-         * either an invalid character set conversion (which we care
-         * about), or an incomplete input string (which we don't).
-         * For now, we ignore EINVAL; the right solution is probably
-         * to not use stringprep_locale_to_utf8, and just call iconv
-         * by hand. */
-        if (errno == EILSEQ || errno == EINVAL)
-            return 0;
+    *output = NULL;
 
-        /* Other errors (like ENFILE) are real errors, which we
-         * want to return to the user. */
-        return_error(gs_error_ioerror);
+    setlocale(LC_CTYPE, "");
+#ifdef CODESET
+    codeset = nl_langinfo(CODESET);
+#else
+    codeset = "UTF-8";
+#endif
+
+    /* If the locale is already UTF-8 (or "C"), just copy the input. */
+    if (codeset == NULL || strcmp(codeset, "UTF-8") == 0 ||
+        strcmp(codeset, "C") == 0 || strcmp(codeset, "ANSI_X3.4-1968") == 0) {
+        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
+        if (code < 0)
+            return code;
+        pdfi_countup(*output);
+        memcpy((*output)->data, input->data, input->length);
+        return 0;
     }
 
-    code = pdfi_object_alloc(ctx, PDF_STRING, strlen(out), (pdf_obj **)output);
-    if (code < 0)
-        return code;
-    pdfi_countup(*output);
-    memcpy((*output)->data, out, strlen(out));
+    cd = iconv_open("UTF-8", codeset);
+    if (cd == (iconv_t)-1) {
+        /* Cannot open converter; fall back to copying the input unchanged. */
+        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
+        if (code < 0)
+            return code;
+        pdfi_countup(*output);
+        memcpy((*output)->data, input->data, input->length);
+        return 0;
+    }
 
-    free(out);
+    /* Allocate output buffer: worst case is 4x expansion for UTF-8. */
+    outlen = input->length * 4 + 1;
+    utf8buf = (char *)malloc(outlen);
+    if (utf8buf == NULL) {
+        iconv_close(cd);
+        return_error(gs_error_VMerror);
+    }
+
+    inbuf = (char *)input->data;
+    inbytes = input->length;
+    outbuf = utf8buf;
+    outbytes = outlen;
+
+    if (iconv(cd, &inbuf, &inbytes, &outbuf, &outbytes) == (size_t)-1) {
+        /* Conversion error (e.g. invalid sequence); fall back to
+         * copying the input unchanged, matching the original
+         * stringprep_locale_to_utf8 behaviour on EILSEQ/EINVAL. */
+        free(utf8buf);
+        iconv_close(cd);
+        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
+        if (code < 0)
+            return code;
+        pdfi_countup(*output);
+        memcpy((*output)->data, input->data, input->length);
+        return 0;
+    }
+
+    iconv_close(cd);
+    outlen = outlen - outbytes;  /* actual bytes written */
+
+    code = pdfi_object_alloc(ctx, PDF_STRING, outlen, (pdf_obj **)output);
+    if (code < 0) {
+        free(utf8buf);
+        return code;
+    }
+    pdfi_countup(*output);
+    memcpy((*output)->data, utf8buf, outlen);
+    free(utf8buf);
     return 0;
 }
 #else
@@ -125,4 +177,4 @@ locale_to_utf8(pdf_context *ctx, pdf_string *input, pdf_string **output)
     return 0;
 }
 #endif /* _WINDOWS_ */
-#endif /* HAVE_LIBIDN */
+#endif /* HAVE_LIBIDN2 */

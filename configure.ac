@@ -138,7 +138,7 @@ if test x"$host" != x"$build" ; then
   echo $AUXFLAGS_MAK_LINE07 >> $AUXFLAGS_MAK.in
 
   AC_MSG_NOTICE([Begin recursive call to configure script (for auxiliary tools)])
-  "$absolute_source_path/configure" CC="$CCAUX" CFLAGS="$CFLAGSAUX" CPPFLAGS="$CPPFLAGSAUX" LDFLAGS="$LDFLAGSAUX" CCAUX= CFLAGSAUX= CFLAGSAUX= MAKEFILE=$AUXFLAGS_MAK --host=$build --build=$build --enable-auxtools_only --disable-hidden-visibility --with-local-zlib --without-libtiff --disable-contrib --disable-fontconfig --disable-dbus --disable-freetype --disable-cups --disable-openjpeg --disable-gtk --with-libiconv=no --without-libidn --without-libpaper --without-pdftoraster --without-ijs --without-jbig2dec --without-x --with-drivers=""
+  "$absolute_source_path/configure" CC="$CCAUX" CFLAGS="$CFLAGSAUX" CPPFLAGS="$CPPFLAGSAUX" LDFLAGS="$LDFLAGSAUX" CCAUX= CFLAGSAUX= CFLAGSAUX= MAKEFILE=$AUXFLAGS_MAK --host=$build --build=$build --enable-auxtools_only --disable-hidden-visibility --with-local-zlib --without-libtiff --disable-contrib --disable-fontconfig --disable-dbus --disable-freetype --disable-cups --disable-openjpeg --disable-gtk --with-libiconv=no --without-libidn2 --without-libpaper --without-pdftoraster --without-ijs --without-jbig2dec --without-x --with-drivers=""
   status=$?
   cp config.log "$olddir/configaux.log"
   if test $status -eq 0 ; then
@@ -1166,50 +1166,59 @@ case $with_libiconv in
     ;;
 esac
 
-dnl Check for libidn (needed for Unicode password support)
-AC_ARG_WITH(libidn,
-            [AS_HELP_STRING([--without-libidn],
-                               [Do not use libidn to support Unicode passwords])],,
-            [with_libidn=maybe])
+dnl Check for libidn2 (needed for Unicode password support)
+AC_ARG_WITH(libidn2,
+            [AS_HELP_STRING([--without-libidn2],
+                               [Do not use libidn2 to support Unicode passwords])],,
+            [with_libidn2=maybe])
 
-if test x$with_libidn != xno; then
+if test x$with_libidn2 != xno; then
   if test x"$PKGCONFIG" != x""; then
-    AC_MSG_CHECKING(for libidn with pkg-config)
-    if $PKGCONFIG --exists libidn; then
+    AC_MSG_CHECKING(for libidn2 with pkg-config)
+    if $PKGCONFIG --exists libidn2; then
             AC_MSG_RESULT(yes)
-            LIBS="$LIBS `$PKGCONFIG --libs libidn`"
-            CFLAGS="$CFLAGS `$PKGCONFIG --cflags libidn`"
-            HAVE_LIBIDN=-DHAVE_LIBIDN
+            LIBS="$LIBS `$PKGCONFIG --libs libidn2`"
+            CFLAGS="$CFLAGS `$PKGCONFIG --cflags libidn2`"
+            HAVE_LIBIDN2=-DHAVE_LIBIDN2
     else
             AC_MSG_RESULT(no)
     fi
   fi
-  if test -z "$HAVE_LIBIDN"; then
-    AC_CHECK_LIB(idn, stringprep, [
-        with_libidn=no
-        AC_CHECK_HEADER([stringprep.h],
+  if test -z "$HAVE_LIBIDN2"; then
+    AC_CHECK_LIB(idn2, idn2_lookup_u8, [
+        with_libidn2=no
+        AC_CHECK_HEADER([idn2.h],
         [
-          with_libidn=yes
-          HAVE_LIBIDN="-DHAVE_LIBIDN"
-          LIBS="$LIBS -lidn"
+          with_libidn2=yes
+          HAVE_LIBIDN2="-DHAVE_LIBIDN2"
+          LIBS="$LIBS -lidn2"
         ])
         ], [
-        if test x$with_libidn != xmaybe; then
-          AC_MSG_ERROR([libidn not found])
+        if test x$with_libidn2 != xmaybe; then
+          AC_MSG_ERROR([libidn2 not found])
         fi
-        with_libidn=no
+        with_libidn2=no
     ])
   fi
 fi
 
 UTF8DEVS=''
-if test x$with_libidn != xno; then
+if test x$with_libidn2 != xno; then
   if test x$found_iconv != xno; then
     UTF8DEVS='$(PSD)utf8.dev'
   fi
 fi
-AC_SUBST(HAVE_LIBIDN)
+AC_SUBST(HAVE_LIBIDN2)
 AC_SUBST(UTF8DEVS)
+
+dnl Check for libunistring (needed for SASLprep NFKC normalization)
+AC_CHECK_LIB(unistring, u8_normalize, [
+    AC_CHECK_HEADER([unistr.h], [
+        LIBS="$LIBS -lunistring"
+        HAVE_LIBUNISTRING="-DHAVE_LIBUNISTRING"
+    ])
+])
+AC_SUBST(HAVE_LIBUNISTRING)
 
 if test x"$GPL_CONF" = x"yes" ; then
 

@@ -175,6 +175,10 @@ $(PDFOBJ)pdf_sec.$(OBJ): $(PDFSRC)pdf_sec.c $(PDFINCLUDES) \
 	$(PDF_MAK) $(MAKEDIRS)
 	$(PDFCCC) $(PDFSRC)pdf_sec.c $(PDFO_)pdf_sec.$(OBJ)
 
+$(PDFOBJ)pdf_saslprep.$(OBJ): $(PDFSRC)pdf_saslprep.c $(PDFSRC)pdf_saslprep.h $(PDFINCLUDES) \
+	$(PDF_MAK) $(MAKEDIRS)
+	$(PDFCCC) $(PDFSRC)pdf_saslprep.c $(PDFO_)pdf_saslprep.$(OBJ)
+
 $(PDFOBJ)pdf_utf8_mswin32_.$(OBJ): $(PDFSRC)pdf_utf8.c $(PDFINCLUDES) $(PDF_MAK) $(MAKEDIRS)
 	$(PDFCCC_WIN) $(PDFSRC)pdf_utf8.c $(PDFO_)pdf_utf8_mswin32_.$(OBJ)
 
@@ -334,6 +338,7 @@ PDF_OBJS=\
     $(PDFOBJ)pdf_optcontent.$(OBJ)\
     $(PDFOBJ)pdf_check.$(OBJ)\
     $(PDFOBJ)pdf_sec.$(OBJ)\
+    $(PDFOBJ)pdf_saslprep.$(OBJ)\
     $(PDFOBJ)pdf_utf8.$(OBJ)\
     $(PDFOBJ)pdf_deref.$(OBJ)\
     $(PDFOBJ)pdf_repair.$(OBJ)\

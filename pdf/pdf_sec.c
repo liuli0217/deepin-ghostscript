@@ -28,6 +28,7 @@
 #include "sha2.h"
 #include "pdf_utf8.h"
 #include "pdf_deref.h"
+#include "pdf_saslprep.h"
 
 /* The padding string as defined in step 1 of Algorithm 3.2 */
 static char PadString[32] = {
@@ -151,52 +152,43 @@ done:
     return code;
 }
 
-#ifdef HAVE_LIBIDN
-#  include <stringprep.h>
+
+#ifdef HAVE_LIBIDN2
 
 static int apply_sasl(pdf_context *ctx, char *Password, int Len, char **NewPassword, int *NewLen)
 {
-    byte *buffer;
-    uint buffer_size;
-    Stringprep_rc err;
+    char *saslprep_result = NULL;
+    int saslprep_len = 0;
+    int rc;
+    char *gs_result;
 
-    buffer_size = Len * 11 + 1;
-    buffer = (byte *)gs_alloc_bytes(ctx->memory, buffer_size, "saslprep result");
-    if (buffer == NULL)
-        return_error(gs_error_VMerror);
-
-    err = stringprep((char *)buffer, buffer_size, 0, stringprep_saslprep);
-    if (err != STRINGPREP_OK) {
-        gs_free_object(ctx->memory, buffer, "saslprep result");
-
-        /* Since we're just verifying the password to an existing
-         * document here, we don't care about "invalid input" errors
-         * like STRINGPREP_CONTAINS_PROHIBITED.  In these cases, we
-         * ignore the error and return the original string unchanged --
-         * chances are it's not the right password anyway, and if it
-         * is we shouldn't gratuitously fail to decrypt the document.
-         *
-         * On the other hand, errors like STRINGPREP_NFKC_FAILED are
-         * real errors, and should be returned to the user.
-         *
-         * Fortunately, the stringprep error codes are sorted to make
-         * this easy: the errors we want to ignore are the ones with
-         * codes less than 100. */
-        if ((int)err < 100) {
-            *NewPassword = Password;
-            *NewLen = Len;
-            return 0;
-        }
-
+    rc = pdf_saslprep(Password, Len, &saslprep_result, &saslprep_len);
+    if (rc == 1) {
+        /* Soft error — fall back to original password, matching the
+         * original stringprep behavior for error codes < 100 */
+        *NewPassword = Password;
+        *NewLen = Len;
+        return 0;
+    }
+    if (rc < 0) {
+        /* Hard error (NFKC failure or memory error) */
         return_error(gs_error_ioerror);
     }
 
-    *NewLen = strlen((char *)buffer);
-    *NewPassword = (char *)buffer;
+    /* Success — copy malloc'd result to gs-managed memory */
+    gs_result = (char *)gs_alloc_bytes(ctx->memory, saslprep_len, "saslprep result");
+    if (gs_result == NULL) {
+        free(saslprep_result);
+        return_error(gs_error_VMerror);
+    }
+    memcpy(gs_result, saslprep_result, saslprep_len);
+    free(saslprep_result);
 
+    *NewPassword = gs_result;
+    *NewLen = saslprep_len;
     return 0;
-
 }
+
 #endif
 
 static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int KeyLen)
@@ -214,12 +206,12 @@ static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int
     /* From the original code in Resource/Init/pdf_sec.ps:
      * Step 1.
      * If the .saslprep operator isn't available (because ghostscript
-     * wasn't built with libidn support), just skip this step.  ASCII
+     * wasn't built with libidn2 support), just skip this step.  ASCII
      * passwords will still work fine, and even most non-ASCII passwords
      * will be okay; any non-ASCII passwords that fail will produce a
      * warning from pdf_process_Encrypt.
      */
-#ifdef HAVE_LIBIDN
+#ifdef HAVE_LIBIDN2
     code = apply_sasl(ctx, Password, Len, &UTF8_Password, &NewLen);
     if (code < 0)
         return code;
@@ -303,10 +295,11 @@ static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int
 error:
     pdfi_countdown(Key);
     gs_free_object(ctx->memory, Test, "R5 password test");
-#ifdef HAVE_LIBIDN
+#ifdef HAVE_LIBIDN2
     if (UTF8_Password != Password)
         gs_free_object(ctx->memory, UTF8_Password, "free sasl result");
 #endif
+
     return code;
 }
 
@@ -615,12 +608,12 @@ static int check_owner_password_R5(pdf_context *ctx, char *Password, int Len, in
     /* From the original code in Resource/Init/pdf_sec.ps:
      * Step 1.
      * If the .saslprep operator isn't available (because ghostscript
-     * wasn't built with libidn support), just skip this step.  ASCII
+     * wasn't built with libidn2 support), just skip this step.  ASCII
      * passwords will still work fine, and even most non-ASCII passwords
      * will be okay; any non-ASCII passwords that fail will produce a
      * warning from pdf_process_Encrypt.
      */
-#ifdef HAVE_LIBIDN
+#ifdef HAVE_LIBIDN2
     code = apply_sasl(ctx, Password, Len, &UTF8_Password, &NewLen);
     if (code < 0)
         return code;
@@ -708,10 +701,11 @@ static int check_owner_password_R5(pdf_context *ctx, char *Password, int Len, in
 error:
     pdfi_countdown(Key);
     gs_free_object(ctx->memory, Test, "R5 password test");
-#ifdef HAVE_LIBIDN
+#ifdef HAVE_LIBIDN2
     if (UTF8_Password != Password)
         gs_free_object(ctx->memory, UTF8_Password, "free sasl result");
 #endif
+
     return code;
 }
 

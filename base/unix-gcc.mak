@@ -160,8 +160,8 @@ GENOPT=
 # -DHAVE_MKSTEMP64
 #	use non-standard function mkstemp64()
 #
-# -DHAVE_LIBIDN
-#	use libidn to canonicalize Unicode passwords
+# -DHAVE_LIBIDN2
+#	use libidn2 to canonicalize Unicode passwords
 #
 # -DHAVE_SETLOCALE
 #	call setlocale(LC_CTYPE) when running as a standalone app

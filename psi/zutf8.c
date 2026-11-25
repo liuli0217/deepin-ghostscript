@@ -26,16 +26,23 @@
 #include "errno_.h"
 #include "string_.h"
 #include "store.h"
-#include <stringprep.h>
+#include <idn2.h>
+#include <iconv.h>
+#include <langinfo.h>
+#include <locale.h>
+#include <stdlib.h>
 
 /* Convert a string from the current locale's character set to UTF-8.
+ * Uses iconv (POSIX standard, part of glibc) to perform the conversion,
+ * replacing the former stringprep_locale_to_utf8() call that was lost
+ * when migrating from libidn to libidn2.
  * <string> .locale_to_utf8 <string> */
 static int
 zlocale_to_utf8(i_ctx_t *i_ctx_p)
 {
     os_ptr op = osp;
     char *input;
-    char *output;
+    char *output = NULL;
     int code;
 
     check_op(1);
@@ -44,30 +51,70 @@ zlocale_to_utf8(i_ctx_t *i_ctx_p)
     if (input == 0)
         return_error(gs_error_VMerror);
 
-    output = stringprep_locale_to_utf8(input);
-    ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
-    if (output == 0) {
-        /* This function is intended to be used on strings whose
-         * character set is unknown, so it's not an error if the
-         * input contains invalid characters.  Just return the input
-         * string unchanged.
-         *
-         * Sadly, EINVAL from stringprep_locale_to_utf8 can mean
-         * either an invalid character set conversion (which we care
-         * about), or an incomplete input string (which we don't).
-         * For now, we ignore EINVAL; the right solution is probably
-         * to not use stringprep_locale_to_utf8, and just call iconv
-         * by hand. */
-        if (errno == EILSEQ || errno == EINVAL)
-            return 0;
+    {
+        iconv_t cd;
+        const char *codeset;
+        char *inbuf, *outbuf;
+        size_t inbytes, outbytes, outlen;
+        size_t input_len = strlen(input);
 
-        /* Other errors (like ENFILE) are real errors, which we
-         * want to return to the user. */
-        return_error(gs_error_ioerror);
+        setlocale(LC_CTYPE, "");
+#ifdef CODESET
+        codeset = nl_langinfo(CODESET);
+#else
+        codeset = "UTF-8";
+#endif
+
+        /* If the locale is already UTF-8 (or "C"), just return the input. */
+        if (codeset == NULL || strcmp(codeset, "UTF-8") == 0 ||
+            strcmp(codeset, "C") == 0 ||
+            strcmp(codeset, "ANSI_X3.4-1968") == 0) {
+            code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
+            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
+            return code;
+        }
+
+        cd = iconv_open("UTF-8", codeset);
+        if (cd == (iconv_t)-1) {
+            /* Cannot open converter; fall back to returning input unchanged. */
+            code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
+            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
+            return code;
+        }
+
+        outlen = input_len * 4 + 1;
+        output = (char *)malloc(outlen);
+        if (output == NULL) {
+            iconv_close(cd);
+            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
+            return_error(gs_error_VMerror);
+        }
+
+        inbuf = input;
+        inbytes = input_len;
+        outbuf = output;
+        outbytes = outlen;
+
+        if (iconv(cd, &inbuf, &inbytes, &outbuf, &outbytes) == (size_t)-1) {
+            /* Conversion error; fall back to returning input unchanged,
+             * matching the original stringprep_locale_to_utf8 behaviour
+             * on EILSEQ/EINVAL. */
+            free(output);
+            output = NULL;
+            iconv_close(cd);
+        } else {
+            iconv_close(cd);
+            output[outlen - outbytes] = '\0';
+        }
     }
 
-    code = string_to_ref(output, op, iimemory, "locale_to_utf8 output");
-    free(output);
+    if (output != NULL) {
+        code = string_to_ref(output, op, iimemory, "locale_to_utf8 output");
+        free(output);
+    } else {
+        code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
+    }
+    ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
     if (code < 0)
         return code;
 
