@@ -1,0 +1,1630 @@
+Description: Migrate libidn12 dependency to libidn2-0 with full SASLprep support
+ Replace libidn (libidn12) with libidn2-0, preserving all original
+ functionality with no new runtime dependencies:
+ .
+ - Build system: change libidn-dev to libidn2-dev, detect libidn2 via
+   pkg-config and AC_CHECK_LIB, define HAVE_LIBIDN2, check for idn2.h
+ - locale_to_utf8: replace removed stringprep_locale_to_utf8() with
+   iconv (glibc), matching the original internal implementation
+ - SASLprep: implement RFC 4013 in pdf_saslprep.c using libunistring
+   (already a transitive dependency of libidn2-0) for NFKC normalization,
+   Unicode category checks, case folding, and bidi class queries
+ - pdf_sec.c: restore apply_sasl() wrapper calling pdf_saslprep()
+ - Reference: libidn source RFC 3454 table data (LGPL-3+/GPL-2+,
+   compatible with AGPL-3)
+Author: liuli <liuli@uniontech.com>
+Last-Update: 2026-11-26
+
+diff --git a/Makefile.in b/Makefile.in
+index de28671..d9733fa 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -175,15 +175,15 @@ GENOPTAUX=
+ # -DHAVE_MKSTEMP64
+ #	use non-standard function mkstemp64()
+ #
+-# -DHAVE_LIBIDN
+-#	use libidn to canonicalize Unicode passwords
++# -DHAVE_LIBIDN2
++#	use libidn2 to canonicalize Unicode passwords
+ #
+ # -DHAVE_SETLOCALE
+ #	call setlocale(LC_CTYPE) when running as a standalone app
+ # -DHAVE_SSE2
+ #       use sse2 intrinsics
+ 
+-CAPOPT= @HAVE_MKSTEMP@ @HAVE_FILE64@ @HAVE_FSEEKO@ @HAVE_MKSTEMP64@ @HAVE_FONTCONFIG@ @HAVE_LIBIDN@ @HAVE_SETLOCALE@ @HAVE_SSE2@ @HAVE_DBUS@ @HAVE_BSWAP32@ @HAVE_BYTESWAP_H@ @HAVE_STRERROR@ @HAVE_ISNAN@ @HAVE_ISINF@ @HAVE_FPCLASSIFY@ @HAVE_PREAD_PWRITE@ @RECURSIVE_MUTEXATTR@
++CAPOPT= @HAVE_MKSTEMP@ @HAVE_FILE64@ @HAVE_FSEEKO@ @HAVE_MKSTEMP64@ @HAVE_FONTCONFIG@ @HAVE_LIBIDN2@ @HAVE_LIBUNISTRING@ @HAVE_SETLOCALE@ @HAVE_SSE2@ @HAVE_DBUS@ @HAVE_BSWAP32@ @HAVE_BYTESWAP_H@ @HAVE_STRERROR@ @HAVE_ISNAN@ @HAVE_ISINF@ @HAVE_FPCLASSIFY@ @HAVE_PREAD_PWRITE@ @RECURSIVE_MUTEXATTR@
+ 
+ # Define the name of the executable file.
+ 
+diff --git a/base/unix-gcc.mak b/base/unix-gcc.mak
+index 79603a4..5810c4f 100644
+--- a/base/unix-gcc.mak
++++ b/base/unix-gcc.mak
+@@ -160,8 +160,8 @@ GENOPT=
+ # -DHAVE_MKSTEMP64
+ #	use non-standard function mkstemp64()
+ #
+-# -DHAVE_LIBIDN
+-#	use libidn to canonicalize Unicode passwords
++# -DHAVE_LIBIDN2
++#	use libidn2 to canonicalize Unicode passwords
+ #
+ # -DHAVE_SETLOCALE
+ #	call setlocale(LC_CTYPE) when running as a standalone app
+diff --git a/configure.ac b/configure.ac
+index 2f67fd5..20053d0 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -138,7 +138,7 @@ if test x"$host" != x"$build" ; then
+   echo $AUXFLAGS_MAK_LINE07 >> $AUXFLAGS_MAK.in
+ 
+   AC_MSG_NOTICE([Begin recursive call to configure script (for auxiliary tools)])
+-  "$absolute_source_path/configure" CC="$CCAUX" CFLAGS="$CFLAGSAUX" CPPFLAGS="$CPPFLAGSAUX" LDFLAGS="$LDFLAGSAUX" CCAUX= CFLAGSAUX= CFLAGSAUX= MAKEFILE=$AUXFLAGS_MAK --host=$build --build=$build --enable-auxtools_only --disable-hidden-visibility --with-local-zlib --without-libtiff --disable-contrib --disable-fontconfig --disable-dbus --disable-freetype --disable-cups --disable-openjpeg --disable-gtk --with-libiconv=no --without-libidn --without-libpaper --without-pdftoraster --without-ijs --without-jbig2dec --without-x --with-drivers=""
++  "$absolute_source_path/configure" CC="$CCAUX" CFLAGS="$CFLAGSAUX" CPPFLAGS="$CPPFLAGSAUX" LDFLAGS="$LDFLAGSAUX" CCAUX= CFLAGSAUX= CFLAGSAUX= MAKEFILE=$AUXFLAGS_MAK --host=$build --build=$build --enable-auxtools_only --disable-hidden-visibility --with-local-zlib --without-libtiff --disable-contrib --disable-fontconfig --disable-dbus --disable-freetype --disable-cups --disable-openjpeg --disable-gtk --with-libiconv=no --without-libidn2 --without-libpaper --without-pdftoraster --without-ijs --without-jbig2dec --without-x --with-drivers=""
+   status=$?
+   cp config.log "$olddir/configaux.log"
+   if test $status -eq 0 ; then
+@@ -1166,51 +1166,60 @@ case $with_libiconv in
+     ;;
+ esac
+ 
+-dnl Check for libidn (needed for Unicode password support)
+-AC_ARG_WITH(libidn,
+-            [AS_HELP_STRING([--without-libidn],
+-                               [Do not use libidn to support Unicode passwords])],,
+-            [with_libidn=maybe])
++dnl Check for libidn2 (needed for Unicode password support)
++AC_ARG_WITH(libidn2,
++            [AS_HELP_STRING([--without-libidn2],
++                               [Do not use libidn2 to support Unicode passwords])],,
++            [with_libidn2=maybe])
+ 
+-if test x$with_libidn != xno; then
++if test x$with_libidn2 != xno; then
+   if test x"$PKGCONFIG" != x""; then
+-    AC_MSG_CHECKING(for libidn with pkg-config)
+-    if $PKGCONFIG --exists libidn; then
++    AC_MSG_CHECKING(for libidn2 with pkg-config)
++    if $PKGCONFIG --exists libidn2; then
+             AC_MSG_RESULT(yes)
+-            LIBS="$LIBS `$PKGCONFIG --libs libidn`"
+-            CFLAGS="$CFLAGS `$PKGCONFIG --cflags libidn`"
+-            HAVE_LIBIDN=-DHAVE_LIBIDN
++            LIBS="$LIBS `$PKGCONFIG --libs libidn2`"
++            CFLAGS="$CFLAGS `$PKGCONFIG --cflags libidn2`"
++            HAVE_LIBIDN2=-DHAVE_LIBIDN2
+     else
+             AC_MSG_RESULT(no)
+     fi
+   fi
+-  if test -z "$HAVE_LIBIDN"; then
+-    AC_CHECK_LIB(idn, stringprep, [
+-        with_libidn=no
+-        AC_CHECK_HEADER([stringprep.h],
++  if test -z "$HAVE_LIBIDN2"; then
++    AC_CHECK_LIB(idn2, idn2_lookup_u8, [
++        with_libidn2=no
++        AC_CHECK_HEADER([idn2.h],
+         [
+-          with_libidn=yes
+-          HAVE_LIBIDN="-DHAVE_LIBIDN"
+-          LIBS="$LIBS -lidn"
++          with_libidn2=yes
++          HAVE_LIBIDN2="-DHAVE_LIBIDN2"
++          LIBS="$LIBS -lidn2"
+         ])
+         ], [
+-        if test x$with_libidn != xmaybe; then
+-          AC_MSG_ERROR([libidn not found])
++        if test x$with_libidn2 != xmaybe; then
++          AC_MSG_ERROR([libidn2 not found])
+         fi
+-        with_libidn=no
++        with_libidn2=no
+     ])
+   fi
+ fi
+ 
+ UTF8DEVS=''
+-if test x$with_libidn != xno; then
++if test x$with_libidn2 != xno; then
+   if test x$found_iconv != xno; then
+     UTF8DEVS='$(PSD)utf8.dev'
+   fi
+ fi
+-AC_SUBST(HAVE_LIBIDN)
++AC_SUBST(HAVE_LIBIDN2)
+ AC_SUBST(UTF8DEVS)
+ 
++dnl Check for libunistring (needed for SASLprep NFKC normalization)
++AC_CHECK_LIB(unistring, u8_normalize, [
++    AC_CHECK_HEADER([unistr.h], [
++        LIBS="$LIBS -lunistring"
++        HAVE_LIBUNISTRING="-DHAVE_LIBUNISTRING"
++    ])
++])
++AC_SUBST(HAVE_LIBUNISTRING)
++
+ if test x"$GPL_CONF" = x"yes" ; then
+ 
+ dnl Tests for libpaper (to determine system default paper size)
+diff --git a/pdf/pdf.mak b/pdf/pdf.mak
+index da5b8a9..b905d1b 100644
+--- a/pdf/pdf.mak
++++ b/pdf/pdf.mak
+@@ -175,6 +175,10 @@ $(PDFOBJ)pdf_sec.$(OBJ): $(PDFSRC)pdf_sec.c $(PDFINCLUDES) \
+ 	$(PDF_MAK) $(MAKEDIRS)
+ 	$(PDFCCC) $(PDFSRC)pdf_sec.c $(PDFO_)pdf_sec.$(OBJ)
+ 
++$(PDFOBJ)pdf_saslprep.$(OBJ): $(PDFSRC)pdf_saslprep.c $(PDFSRC)pdf_saslprep.h $(PDFINCLUDES) \
++	$(PDF_MAK) $(MAKEDIRS)
++	$(PDFCCC) $(PDFSRC)pdf_saslprep.c $(PDFO_)pdf_saslprep.$(OBJ)
++
+ $(PDFOBJ)pdf_utf8_mswin32_.$(OBJ): $(PDFSRC)pdf_utf8.c $(PDFINCLUDES) $(PDF_MAK) $(MAKEDIRS)
+ 	$(PDFCCC_WIN) $(PDFSRC)pdf_utf8.c $(PDFO_)pdf_utf8_mswin32_.$(OBJ)
+ 
+@@ -334,6 +338,7 @@ PDF_OBJS=\
+     $(PDFOBJ)pdf_optcontent.$(OBJ)\
+     $(PDFOBJ)pdf_check.$(OBJ)\
+     $(PDFOBJ)pdf_sec.$(OBJ)\
++    $(PDFOBJ)pdf_saslprep.$(OBJ)\
+     $(PDFOBJ)pdf_utf8.$(OBJ)\
+     $(PDFOBJ)pdf_deref.$(OBJ)\
+     $(PDFOBJ)pdf_repair.$(OBJ)\
+diff --git a/pdf/pdf_saslprep.c b/pdf/pdf_saslprep.c
+new file mode 100644
+index 0000000..937b30d
+--- /dev/null
++++ b/pdf/pdf_saslprep.c
+@@ -0,0 +1,1015 @@
++/* SASLprep (RFC 4013) implementation using libunistring.
++ *
++ * This replaces the former libidn stringprep() dependency.
++ * The RFC 3454 table data is derived from libidn's rfc3454.c
++ * (LGPL-3+/GPL-2+, compatible with ghostscript's AGPL-3).
++ *
++ * libunistring provides NFKC normalization, Unicode category
++ * checks, case folding, and bidi class queries — it is already
++ * installed as a transitive dependency of libidn2-0.
++ */
++
++#include <stdlib.h>
++#include <string.h>
++
++#include "pdf_saslprep.h"
++
++#ifdef HAVE_LIBUNISTRING
++
++#include <unitypes.h>
++#include <uninorm.h>
++#include <unistr.h>
++#include <unictype.h>
++#include <unicase.h>
++
++/* ---- RFC 3454 table data ---- */
++
++/* B.1: map-to-nothing (RFC 3454 Section B.1) */
++typedef struct {
++    ucs4_t start;
++    ucs4_t end;
++} saslprep_range;
++
++static const saslprep_range saslprep_b1[] = {
++    { 0x000AD, 0x000AD },
++    { 0x0034F, 0x0034F },
++    { 0x01806, 0x01806 },
++    { 0x0180B, 0x0180D },
++    { 0x0200B, 0x0200D },
++    { 0x02060, 0x02060 },
++    { 0x0FE00, 0x0FE0F },
++    { 0x0FEFF, 0x0FEFF },
++};
++
++#define SASLPREP_B1_LEN 8
++
++/* C.2.2 specials (non-ASCII control chars not caught by category Cc) */
++static const saslprep_range saslprep_c22_specials[] = {
++    { 0x006DD, 0x006DD },
++    { 0x0070F, 0x0070F },
++    { 0x0180E, 0x0180E },
++    { 0x0200C, 0x0200D },
++    { 0x02028, 0x02029 },
++    { 0x02060, 0x02063 },
++    { 0x0206A, 0x0206F },
++    { 0x0FEFF, 0x0FEFF },
++    { 0x0FFF9, 0x0FFFC },
++    { 0x1D173, 0x1D17A },
++};
++
++#define SASLPREP_C22_SPECIALS_LEN 10
++
++/* C.6: not suitable for plaintext (RFC 3454 Section C.6) */
++static const saslprep_range saslprep_c6[] = {
++    { 0x0FFF9, 0x0FFFD },
++};
++
++#define SASLPREP_C6_LEN 1
++
++/* C.7: not suitable for canonical representation (RFC 3454 Section C.7) */
++static const saslprep_range saslprep_c7[] = {
++    { 0x02FF0, 0x02FFB },
++};
++
++#define SASLPREP_C7_LEN 1
++
++/* C.8: change display properties (RFC 3454 Section C.8) */
++static const saslprep_range saslprep_c8[] = {
++    { 0x00340, 0x00341 },
++    { 0x0200E, 0x0200F },
++    { 0x0202A, 0x0202E },
++    { 0x0206A, 0x0206F },
++};
++
++#define SASLPREP_C8_LEN 4
++
++/* C.9: tagging characters (RFC 3454 Section C.9) */
++static const saslprep_range saslprep_c9[] = {
++    { 0xE0001, 0xE0001 },
++    { 0xE0020, 0xE007F },
++};
++
++#define SASLPREP_C9_LEN 2
++
++/* B.2/B.3 case-fold exceptions (RFC 3454 Section B.2)
++ * Each entry maps a codepoint to its case-folded form.
++ * For codepoints not in this table, uc_tolower() is used. */
++typedef struct {
++    ucs4_t cp;
++    ucs4_t map[4];
++    int map_len;
++} saslprep_b3_entry;
++
++static const saslprep_b3_entry saslprep_b3_table[] = {
++    { 0x00B5, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x00DF, { 0x0073, 0x0073, 0x0000, 0x0000 }, 2 },
++    { 0x0130, { 0x0069, 0x0307, 0x0000, 0x0000 }, 2 },
++    { 0x0149, { 0x02BC, 0x006E, 0x0000, 0x0000 }, 2 },
++    { 0x017F, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x01F0, { 0x006A, 0x030C, 0x0000, 0x0000 }, 2 },
++    { 0x0345, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x037A, { 0x0020, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x0390, { 0x03B9, 0x0308, 0x0301, 0x0000 }, 3 },
++    { 0x03B0, { 0x03C5, 0x0308, 0x0301, 0x0000 }, 3 },
++    { 0x03C2, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D0, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D1, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D2, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D3, { 0x03CD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D4, { 0x03CB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D5, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03D6, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03F0, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03F1, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03F2, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x03F5, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x0587, { 0x0565, 0x0582, 0x0000, 0x0000 }, 2 },
++    { 0x1E96, { 0x0068, 0x0331, 0x0000, 0x0000 }, 2 },
++    { 0x1E97, { 0x0074, 0x0308, 0x0000, 0x0000 }, 2 },
++    { 0x1E98, { 0x0077, 0x030A, 0x0000, 0x0000 }, 2 },
++    { 0x1E99, { 0x0079, 0x030A, 0x0000, 0x0000 }, 2 },
++    { 0x1E9A, { 0x0061, 0x02BE, 0x0000, 0x0000 }, 2 },
++    { 0x1E9B, { 0x1E61, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1F50, { 0x03C5, 0x0313, 0x0000, 0x0000 }, 2 },
++    { 0x1F52, { 0x03C5, 0x0313, 0x0300, 0x0000 }, 3 },
++    { 0x1F54, { 0x03C5, 0x0313, 0x0301, 0x0000 }, 3 },
++    { 0x1F56, { 0x03C5, 0x0313, 0x0342, 0x0000 }, 3 },
++    { 0x1F80, { 0x1F00, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F81, { 0x1F01, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F82, { 0x1F02, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F83, { 0x1F03, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F84, { 0x1F04, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F85, { 0x1F05, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F86, { 0x1F06, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F87, { 0x1F07, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F88, { 0x1F00, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F89, { 0x1F01, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8A, { 0x1F02, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8B, { 0x1F03, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8C, { 0x1F04, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8D, { 0x1F05, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8E, { 0x1F06, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F8F, { 0x1F07, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F90, { 0x1F20, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F91, { 0x1F21, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F92, { 0x1F22, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F93, { 0x1F23, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F94, { 0x1F24, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F95, { 0x1F25, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F96, { 0x1F26, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F97, { 0x1F27, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F98, { 0x1F20, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F99, { 0x1F21, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9A, { 0x1F22, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9B, { 0x1F23, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9C, { 0x1F24, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9D, { 0x1F25, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9E, { 0x1F26, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1F9F, { 0x1F27, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA0, { 0x1F60, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA1, { 0x1F61, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA2, { 0x1F62, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA3, { 0x1F63, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA4, { 0x1F64, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA5, { 0x1F65, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA6, { 0x1F66, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA7, { 0x1F67, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA8, { 0x1F60, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FA9, { 0x1F61, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAA, { 0x1F62, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAB, { 0x1F63, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAC, { 0x1F64, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAD, { 0x1F65, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAE, { 0x1F66, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FAF, { 0x1F67, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FB2, { 0x1F70, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FB3, { 0x03B1, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FB4, { 0x03AC, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FB6, { 0x03B1, 0x0342, 0x0000, 0x0000 }, 2 },
++    { 0x1FB7, { 0x03B1, 0x0342, 0x03B9, 0x0000 }, 3 },
++    { 0x1FBC, { 0x03B1, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FBE, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1FC2, { 0x1F74, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FC3, { 0x03B7, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FC4, { 0x03AE, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FC6, { 0x03B7, 0x0342, 0x0000, 0x0000 }, 2 },
++    { 0x1FC7, { 0x03B7, 0x0342, 0x03B9, 0x0000 }, 3 },
++    { 0x1FCC, { 0x03B7, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FD2, { 0x03B9, 0x0308, 0x0300, 0x0000 }, 3 },
++    { 0x1FD3, { 0x03B9, 0x0308, 0x0301, 0x0000 }, 3 },
++    { 0x1FD6, { 0x03B9, 0x0342, 0x0000, 0x0000 }, 2 },
++    { 0x1FD7, { 0x03B9, 0x0308, 0x0342, 0x0000 }, 3 },
++    { 0x1FE2, { 0x03C5, 0x0308, 0x0300, 0x0000 }, 3 },
++    { 0x1FE3, { 0x03C5, 0x0308, 0x0301, 0x0000 }, 3 },
++    { 0x1FE4, { 0x03C1, 0x0313, 0x0000, 0x0000 }, 2 },
++    { 0x1FE6, { 0x03C5, 0x0342, 0x0000, 0x0000 }, 2 },
++    { 0x1FE7, { 0x03C5, 0x0308, 0x0342, 0x0000 }, 3 },
++    { 0x1FF2, { 0x1F7C, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FF3, { 0x03C9, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FF4, { 0x03CE, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x1FF6, { 0x03C9, 0x0342, 0x0000, 0x0000 }, 2 },
++    { 0x1FF7, { 0x03C9, 0x0342, 0x03B9, 0x0000 }, 3 },
++    { 0x1FFC, { 0x03C9, 0x03B9, 0x0000, 0x0000 }, 2 },
++    { 0x20A8, { 0x0072, 0x0073, 0x0000, 0x0000 }, 2 },
++    { 0x2102, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2103, { 0x00B0, 0x0063, 0x0000, 0x0000 }, 2 },
++    { 0x2107, { 0x025B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2109, { 0x00B0, 0x0066, 0x0000, 0x0000 }, 2 },
++    { 0x210B, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x210C, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x210D, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2110, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2111, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2112, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2115, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2116, { 0x006E, 0x006F, 0x0000, 0x0000 }, 2 },
++    { 0x2119, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x211A, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x211B, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x211C, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x211D, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2120, { 0x0073, 0x006D, 0x0000, 0x0000 }, 2 },
++    { 0x2121, { 0x0074, 0x0065, 0x006C, 0x0000 }, 3 },
++    { 0x2122, { 0x0074, 0x006D, 0x0000, 0x0000 }, 2 },
++    { 0x2124, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2128, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x212C, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x212D, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2130, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2131, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2133, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x213E, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x213F, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x2145, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x3371, { 0x0068, 0x0070, 0x0061, 0x0000 }, 3 },
++    { 0x3373, { 0x0061, 0x0075, 0x0000, 0x0000 }, 2 },
++    { 0x3375, { 0x006F, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x3380, { 0x0070, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x3381, { 0x006E, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x3382, { 0x03BC, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x3383, { 0x006D, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x3384, { 0x006B, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x3385, { 0x006B, 0x0062, 0x0000, 0x0000 }, 2 },
++    { 0x3386, { 0x006D, 0x0062, 0x0000, 0x0000 }, 2 },
++    { 0x3387, { 0x0067, 0x0062, 0x0000, 0x0000 }, 2 },
++    { 0x338A, { 0x0070, 0x0066, 0x0000, 0x0000 }, 2 },
++    { 0x338B, { 0x006E, 0x0066, 0x0000, 0x0000 }, 2 },
++    { 0x338C, { 0x03BC, 0x0066, 0x0000, 0x0000 }, 2 },
++    { 0x3390, { 0x0068, 0x007A, 0x0000, 0x0000 }, 2 },
++    { 0x3391, { 0x006B, 0x0068, 0x007A, 0x0000 }, 3 },
++    { 0x3392, { 0x006D, 0x0068, 0x007A, 0x0000 }, 3 },
++    { 0x3393, { 0x0067, 0x0068, 0x007A, 0x0000 }, 3 },
++    { 0x3394, { 0x0074, 0x0068, 0x007A, 0x0000 }, 3 },
++    { 0x33A9, { 0x0070, 0x0061, 0x0000, 0x0000 }, 2 },
++    { 0x33AA, { 0x006B, 0x0070, 0x0061, 0x0000 }, 3 },
++    { 0x33AB, { 0x006D, 0x0070, 0x0061, 0x0000 }, 3 },
++    { 0x33AC, { 0x0067, 0x0070, 0x0061, 0x0000 }, 3 },
++    { 0x33B4, { 0x0070, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33B5, { 0x006E, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33B6, { 0x03BC, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33B7, { 0x006D, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33B8, { 0x006B, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33B9, { 0x006D, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33BA, { 0x0070, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33BB, { 0x006E, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33BC, { 0x03BC, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33BD, { 0x006D, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33BE, { 0x006B, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33BF, { 0x006D, 0x0077, 0x0000, 0x0000 }, 2 },
++    { 0x33C0, { 0x006B, 0x03C9, 0x0000, 0x0000 }, 2 },
++    { 0x33C1, { 0x006D, 0x03C9, 0x0000, 0x0000 }, 2 },
++    { 0x33C3, { 0x0062, 0x0071, 0x0000, 0x0000 }, 2 },
++    { 0x33C6, { 0x0063, 0x2215, 0x006B, 0x0067 }, 4 },
++    { 0x33C7, { 0x0063, 0x006F, 0x002E, 0x0000 }, 3 },
++    { 0x33C8, { 0x0064, 0x0062, 0x0000, 0x0000 }, 2 },
++    { 0x33C9, { 0x0067, 0x0079, 0x0000, 0x0000 }, 2 },
++    { 0x33CB, { 0x0068, 0x0070, 0x0000, 0x0000 }, 2 },
++    { 0x33CD, { 0x006B, 0x006B, 0x0000, 0x0000 }, 2 },
++    { 0x33CE, { 0x006B, 0x006D, 0x0000, 0x0000 }, 2 },
++    { 0x33D7, { 0x0070, 0x0068, 0x0000, 0x0000 }, 2 },
++    { 0x33D9, { 0x0070, 0x0070, 0x006D, 0x0000 }, 3 },
++    { 0x33DA, { 0x0070, 0x0072, 0x0000, 0x0000 }, 2 },
++    { 0x33DC, { 0x0073, 0x0076, 0x0000, 0x0000 }, 2 },
++    { 0x33DD, { 0x0077, 0x0062, 0x0000, 0x0000 }, 2 },
++    { 0xFB00, { 0x0066, 0x0066, 0x0000, 0x0000 }, 2 },
++    { 0xFB01, { 0x0066, 0x0069, 0x0000, 0x0000 }, 2 },
++    { 0xFB02, { 0x0066, 0x006C, 0x0000, 0x0000 }, 2 },
++    { 0xFB03, { 0x0066, 0x0066, 0x0069, 0x0000 }, 3 },
++    { 0xFB04, { 0x0066, 0x0066, 0x006C, 0x0000 }, 3 },
++    { 0xFB05, { 0x0073, 0x0074, 0x0000, 0x0000 }, 2 },
++    { 0xFB06, { 0x0073, 0x0074, 0x0000, 0x0000 }, 2 },
++    { 0xFB13, { 0x0574, 0x0576, 0x0000, 0x0000 }, 2 },
++    { 0xFB14, { 0x0574, 0x0565, 0x0000, 0x0000 }, 2 },
++    { 0xFB15, { 0x0574, 0x056B, 0x0000, 0x0000 }, 2 },
++    { 0xFB16, { 0x057E, 0x0576, 0x0000, 0x0000 }, 2 },
++    { 0xFB17, { 0x0574, 0x056D, 0x0000, 0x0000 }, 2 },
++    { 0x1D400, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D401, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D402, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D403, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D404, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D405, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D406, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D407, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D408, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D409, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40A, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40B, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40C, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40D, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40E, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D40F, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D410, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D411, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D412, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D413, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D414, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D415, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D416, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D417, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D418, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D419, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D434, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D435, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D436, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D437, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D438, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D439, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43A, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43B, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43C, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43D, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43E, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D43F, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D440, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D441, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D442, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D443, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D444, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D445, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D446, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D447, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D448, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D449, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D44A, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D44B, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D44C, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D44D, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D468, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D469, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46A, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46B, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46C, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46D, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46E, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D46F, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D470, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D471, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D472, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D473, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D474, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D475, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D476, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D477, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D478, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D479, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47A, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47B, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47C, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47D, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47E, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D47F, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D480, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D481, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D49C, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D49E, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D49F, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4A2, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4A5, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4A6, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4A9, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4AA, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4AB, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4AC, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4AE, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4AF, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B0, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B1, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B2, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B3, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B4, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4B5, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D0, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D1, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D2, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D3, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D4, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D5, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D6, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D7, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D8, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4D9, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DA, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DB, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DC, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DD, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DE, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4DF, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E0, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E1, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E2, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E3, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E4, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E5, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E6, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E7, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E8, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D4E9, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D504, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D505, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D507, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D508, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D509, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D50A, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D50D, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D50E, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D50F, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D510, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D511, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D512, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D513, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D514, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D516, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D517, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D518, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D519, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D51A, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D51B, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D51C, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D538, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D539, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D53B, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D53C, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D53D, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D53E, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D540, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D541, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D542, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D543, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D544, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D546, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54A, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54B, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54C, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54D, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54E, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D54F, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D550, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D56C, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D56D, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D56E, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D56F, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D570, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D571, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D572, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D573, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D574, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D575, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D576, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D577, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D578, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D579, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57A, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57B, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57C, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57D, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57E, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D57F, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D580, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D581, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D582, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D583, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D584, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D585, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A0, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A1, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A2, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A3, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A4, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A5, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A6, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A7, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A8, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5A9, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AA, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AB, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AC, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AD, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AE, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5AF, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B0, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B1, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B2, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B3, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B4, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B5, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B6, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B7, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B8, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5B9, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D4, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D5, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D6, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D7, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D8, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5D9, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DA, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DB, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DC, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DD, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DE, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5DF, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E0, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E1, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E2, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E3, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E4, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E5, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E6, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E7, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E8, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5E9, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5EA, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5EB, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5EC, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D5ED, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D608, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D609, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60A, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60B, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60C, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60D, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60E, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D60F, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D610, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D611, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D612, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D613, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D614, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D615, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D616, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D617, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D618, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D619, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61A, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61B, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61C, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61D, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61E, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D61F, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D620, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D621, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D63C, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D63D, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D63E, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D63F, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D640, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D641, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D642, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D643, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D644, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D645, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D646, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D647, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D648, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D649, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64A, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64B, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64C, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64D, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64E, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D64F, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D650, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D651, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D652, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D653, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D654, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D655, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D670, { 0x0061, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D671, { 0x0062, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D672, { 0x0063, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D673, { 0x0064, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D674, { 0x0065, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D675, { 0x0066, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D676, { 0x0067, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D677, { 0x0068, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D678, { 0x0069, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D679, { 0x006A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67A, { 0x006B, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67B, { 0x006C, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67C, { 0x006D, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67D, { 0x006E, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67E, { 0x006F, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D67F, { 0x0070, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D680, { 0x0071, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D681, { 0x0072, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D682, { 0x0073, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D683, { 0x0074, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D684, { 0x0075, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D685, { 0x0076, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D686, { 0x0077, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D687, { 0x0078, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D688, { 0x0079, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D689, { 0x007A, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6A8, { 0x03B1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6A9, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AA, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AB, { 0x03B4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AC, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AD, { 0x03B6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AE, { 0x03B7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6AF, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B0, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B1, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B2, { 0x03BB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B3, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B4, { 0x03BD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B5, { 0x03BE, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B6, { 0x03BF, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B7, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B8, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6B9, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BA, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BB, { 0x03C4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BC, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BD, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BE, { 0x03C7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6BF, { 0x03C8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6C0, { 0x03C9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6D3, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E2, { 0x03B1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E3, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E4, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E5, { 0x03B4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E6, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E7, { 0x03B6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E8, { 0x03B7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6E9, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6EA, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6EB, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6EC, { 0x03BB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6ED, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6EE, { 0x03BD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6EF, { 0x03BE, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F0, { 0x03BF, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F1, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F2, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F3, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F4, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F5, { 0x03C4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F6, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F7, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F8, { 0x03C7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6F9, { 0x03C8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D6FA, { 0x03C9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D70D, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D71C, { 0x03B1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D71D, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D71E, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D71F, { 0x03B4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D720, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D721, { 0x03B6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D722, { 0x03B7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D723, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D724, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D725, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D726, { 0x03BB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D727, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D728, { 0x03BD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D729, { 0x03BE, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72A, { 0x03BF, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72B, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72C, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72D, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72E, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D72F, { 0x03C4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D730, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D731, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D732, { 0x03C7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D733, { 0x03C8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D734, { 0x03C9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D747, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D756, { 0x03B1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D757, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D758, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D759, { 0x03B4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75A, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75B, { 0x03B6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75C, { 0x03B7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75D, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75E, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D75F, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D760, { 0x03BB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D761, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D762, { 0x03BD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D763, { 0x03BE, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D764, { 0x03BF, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D765, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D766, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D767, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D768, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D769, { 0x03C4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D76A, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D76B, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D76C, { 0x03C7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D76D, { 0x03C8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D76E, { 0x03C9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D781, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D790, { 0x03B1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D791, { 0x03B2, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D792, { 0x03B3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D793, { 0x03B4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D794, { 0x03B5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D795, { 0x03B6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D796, { 0x03B7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D797, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D798, { 0x03B9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D799, { 0x03BA, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79A, { 0x03BB, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79B, { 0x03BC, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79C, { 0x03BD, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79D, { 0x03BE, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79E, { 0x03BF, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D79F, { 0x03C0, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A0, { 0x03C1, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A1, { 0x03B8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A2, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A3, { 0x03C4, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A4, { 0x03C5, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A5, { 0x03C6, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A6, { 0x03C7, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A7, { 0x03C8, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7A8, { 0x03C9, 0x0000, 0x0000, 0x0000 }, 1 },
++    { 0x1D7BB, { 0x03C3, 0x0000, 0x0000, 0x0000 }, 1 },
++};
++
++#define SASLPREP_B3_TABLE_LEN (sizeof(saslprep_b3_table) / sizeof(saslprep_b3_table[0]))
++
++/* ---- Helper functions ---- */
++
++static int
++in_range_table(ucs4_t uc, const saslprep_range *table, int len)
++{
++    int lo = 0, hi = len - 1;
++    while (lo <= hi) {
++        int mid = (lo + hi) / 2;
++        if (uc < table[mid].start)
++            hi = mid - 1;
++        else if (uc > table[mid].end)
++            lo = mid + 1;
++        else
++            return 1;
++    }
++    return 0;
++}
++
++static const saslprep_b3_entry *
++find_b3(ucs4_t uc)
++{
++    int lo = 0, hi = (int)SASLPREP_B3_TABLE_LEN - 1;
++    while (lo <= hi) {
++        int mid = (lo + hi) / 2;
++        if (uc < saslprep_b3_table[mid].cp)
++            hi = mid - 1;
++        else if (uc > saslprep_b3_table[mid].cp)
++            lo = mid + 1;
++        else
++            return &saslprep_b3_table[mid];
++    }
++    return NULL;
++}
++
++/* ---- Prohibit check (RFC 3454 Section C) ---- */
++
++static int
++is_prohibited(ucs4_t uc)
++{
++    /* C.1.2: non-ASCII space separators (Zs, not U+0020) */
++    if (uc != 0x0020 && uc_is_general_category(uc, UC_CATEGORY_Zs))
++        return 1;
++
++    /* C.2.1: ASCII control characters (Cc, < 0x80) */
++    if (uc < 0x80 && uc_is_general_category(uc, UC_CATEGORY_Cc))
++        return 1;
++
++    /* C.2.2: non-ASCII control characters */
++    if (uc >= 0x80) {
++        if (uc_is_general_category(uc, UC_CATEGORY_Cc))
++            return 1;
++        if (in_range_table(uc, saslprep_c22_specials, SASLPREP_C22_SPECIALS_LEN))
++            return 1;
++    }
++
++    /* C.3: private use (Co) */
++    if (uc_is_general_category(uc, UC_CATEGORY_Co))
++        return 1;
++
++    /* C.4: non-character codepoints */
++    if ((uc >= 0xFDD0 && uc <= 0xFDEF) ||
++        ((uc & 0xFFFE) == 0xFFFE))
++        return 1;
++
++    /* C.5: surrogates (Cs) */
++    if (uc_is_general_category(uc, UC_CATEGORY_Cs))
++        return 1;
++
++    /* C.6 */
++    if (in_range_table(uc, saslprep_c6, SASLPREP_C6_LEN))
++        return 1;
++
++    /* C.7 */
++    if (in_range_table(uc, saslprep_c7, SASLPREP_C7_LEN))
++        return 1;
++
++    /* C.8 */
++    if (in_range_table(uc, saslprep_c8, SASLPREP_C8_LEN))
++        return 1;
++
++    /* C.9 */
++    if (in_range_table(uc, saslprep_c9, SASLPREP_C9_LEN))
++        return 1;
++
++    return 0;
++}
++
++/* ---- Bidi check (RFC 3454 Section D) ---- */
++
++static int
++bidi_check(const ucs4_t *ucs, int n)
++{
++    int has_randal = 0;
++    int has_lcat = 0;
++    int i;
++
++    for (i = 0; i < n; i++) {
++        int bc = uc_bidi_class(ucs[i]);
++        if (bc == UC_BIDI_R || bc == UC_BIDI_AL)
++            has_randal = 1;
++        else if (bc == UC_BIDI_L)
++            has_lcat = 1;
++    }
++
++    if (!has_randal)
++        return 1; /* no RandALCat characters — OK */
++
++    if (has_lcat)
++        return 0; /* RandALCat + LCat — violation */
++
++    /* First and last characters must be RandALCat */
++    {
++        int bc_first = uc_bidi_class(ucs[0]);
++        int bc_last = uc_bidi_class(ucs[n - 1]);
++        if (bc_first != UC_BIDI_R && bc_first != UC_BIDI_AL)
++            return 0;
++        if (bc_last != UC_BIDI_R && bc_last != UC_BIDI_AL)
++            return 0;
++    }
++
++    return 1;
++}
++
++/* ---- SASLprep main function ---- */
++
++int
++pdf_saslprep(const char *input, int input_len,
++             char **output, int *output_len)
++{
++    /*
++     * Step 1: Mapping (RFC 3454 Section B)
++     *   - B.1: map to nothing (skip)
++     *   - B.2: case fold (B.3 table exceptions, then uc_tolower)
++     */
++    /* Worst case: each byte → 1 codepoint → 4 codepoints × 4 bytes = 16x */
++    int mapped_buf_size = input_len * 16 + 1;
++    uint8_t *mapped = (uint8_t *)malloc(mapped_buf_size);
++    int mapped_len = 0;
++    const uint8_t *inp = (const uint8_t *)input;
++    int pos = 0;
++    int i;
++
++    if (mapped == NULL)
++        return -1;
++
++    while (pos < input_len) {
++        ucs4_t uc;
++        int adv = u8_mbtouc(&uc, inp + pos, input_len - pos);
++        if (adv <= 0)
++            adv = 1; /* skip invalid byte */
++
++        /* B.1: map to nothing */
++        if (in_range_table(uc, saslprep_b1, SASLPREP_B1_LEN)) {
++            pos += adv;
++            continue;
++        }
++
++        /* B.2/B.3: case fold */
++        {
++            const saslprep_b3_entry *entry = find_b3(uc);
++            if (entry) {
++                for (i = 0; i < entry->map_len; i++) {
++                    int w = u8_uctomb(mapped + mapped_len, entry->map[i],
++                                      mapped_buf_size - mapped_len);
++                    if (w < 0) { free(mapped); return -1; }
++                    mapped_len += w;
++                }
++            } else {
++                ucs4_t folded = uc_tolower(uc);
++                int w = u8_uctomb(mapped + mapped_len, folded,
++                                  mapped_buf_size - mapped_len);
++                if (w < 0) { free(mapped); return -1; }
++                mapped_len += w;
++            }
++        }
++
++        pos += adv;
++    }
++
++    /*
++     * Step 2: NFKC normalization (RFC 3454 Section 2)
++     */
++    {
++        size_t nfkc_len = 0;
++        uint8_t *nfkc = u8_normalize(UNINORM_NFKC, mapped, (size_t)mapped_len,
++                                      NULL, &nfkc_len);
++        free(mapped);
++        if (nfkc == NULL)
++            return -1; /* hard error: NFKC failed */
++
++        /*
++         * Step 3: Prohibit check + Bidi check
++         * Convert to UCS4 array for both checks.
++         */
++        {
++            ucs4_t *ucs;
++            int n_uc = 0;
++
++            pos = 0;
++            /* Count codepoints first */
++            while (pos < (int)nfkc_len) {
++                ucs4_t dummy;
++                int adv = u8_mbtouc(&dummy, nfkc + pos, nfkc_len - pos);
++                pos += (adv > 0) ? adv : 1;
++                n_uc++;
++            }
++
++            ucs = (ucs4_t *)malloc((n_uc + 1) * sizeof(ucs4_t));
++            if (ucs == NULL) { free(nfkc); return -1; }
++
++            pos = 0;
++            n_uc = 0;
++            while (pos < (int)nfkc_len) {
++                int adv = u8_mbtouc(&ucs[n_uc], nfkc + pos, nfkc_len - pos);
++                pos += (adv > 0) ? adv : 1;
++                if (adv > 0)
++                    n_uc++;
++            }
++
++            /* Prohibit check */
++            for (i = 0; i < n_uc; i++) {
++                if (is_prohibited(ucs[i])) {
++                    free(ucs);
++                    free(nfkc);
++                    return 1; /* soft error */
++                }
++            }
++
++            /* Bidi check */
++            if (n_uc > 0 && !bidi_check(ucs, n_uc)) {
++                free(ucs);
++                free(nfkc);
++                return 1; /* soft error */
++            }
++
++            free(ucs);
++        }
++
++        *output = (char *)nfkc;
++        *output_len = (int)nfkc_len;
++        return 0;
++    }
++}
++
++#else /* !HAVE_LIBUNISTRING */
++
++/* Stub: libunistring not available — return soft error so caller
++ * falls back to the original password, matching the behavior when
++ * SASLprep support is not compiled in. */
++int
++pdf_saslprep(const char *input, int input_len,
++             char **output, int *output_len)
++{
++    (void)input; (void)input_len; (void)output; (void)output_len;
++    return 1;
++}
++
++#endif /* HAVE_LIBUNISTRING */
+diff --git a/pdf/pdf_saslprep.h b/pdf/pdf_saslprep.h
+new file mode 100644
+index 0000000..5774771
+--- /dev/null
++++ b/pdf/pdf_saslprep.h
+@@ -0,0 +1,21 @@
++/* SASLprep (RFC 4013) password preparation.
++ *
++ * This implements the SASLprep stringprep profile manually,
++ * replacing the former dependency on libidn's stringprep().
++ * libunistring (a transitive dependency of libidn2) is used
++ * for NFKC normalization, Unicode category checks, case
++ * folding, and bidi class queries.
++ *
++ * Returns:
++ *   0  — success, *output is malloc'd, *output_len set
++ *   1  — soft error (prohibited chars or bidi violation),
++ *        caller should fall back to original password
++ *  -1  — hard error (NFKC failure or memory error)
++ */
++#ifndef PDF_SASLPREP_H
++#define PDF_SASLPREP_H
++
++int pdf_saslprep(const char *input, int input_len,
++                 char **output, int *output_len);
++
++#endif /* PDF_SASLPREP_H */
+diff --git a/pdf/pdf_sec.c b/pdf/pdf_sec.c
+index ee8d35d..43d5709 100644
+--- a/pdf/pdf_sec.c
++++ b/pdf/pdf_sec.c
+@@ -28,6 +28,7 @@
+ #include "sha2.h"
+ #include "pdf_utf8.h"
+ #include "pdf_deref.h"
++#include "pdf_saslprep.h"
+ 
+ /* The padding string as defined in step 1 of Algorithm 3.2 */
+ static char PadString[32] = {
+@@ -151,52 +152,43 @@ done:
+     return code;
+ }
+ 
+-#ifdef HAVE_LIBIDN
+-#  include <stringprep.h>
++
++#ifdef HAVE_LIBIDN2
+ 
+ static int apply_sasl(pdf_context *ctx, char *Password, int Len, char **NewPassword, int *NewLen)
+ {
+-    byte *buffer;
+-    uint buffer_size;
+-    Stringprep_rc err;
+-
+-    buffer_size = Len * 11 + 1;
+-    buffer = (byte *)gs_alloc_bytes(ctx->memory, buffer_size, "saslprep result");
+-    if (buffer == NULL)
+-        return_error(gs_error_VMerror);
+-
+-    err = stringprep((char *)buffer, buffer_size, 0, stringprep_saslprep);
+-    if (err != STRINGPREP_OK) {
+-        gs_free_object(ctx->memory, buffer, "saslprep result");
+-
+-        /* Since we're just verifying the password to an existing
+-         * document here, we don't care about "invalid input" errors
+-         * like STRINGPREP_CONTAINS_PROHIBITED.  In these cases, we
+-         * ignore the error and return the original string unchanged --
+-         * chances are it's not the right password anyway, and if it
+-         * is we shouldn't gratuitously fail to decrypt the document.
+-         *
+-         * On the other hand, errors like STRINGPREP_NFKC_FAILED are
+-         * real errors, and should be returned to the user.
+-         *
+-         * Fortunately, the stringprep error codes are sorted to make
+-         * this easy: the errors we want to ignore are the ones with
+-         * codes less than 100. */
+-        if ((int)err < 100) {
+-            *NewPassword = Password;
+-            *NewLen = Len;
+-            return 0;
+-        }
+-
++    char *saslprep_result = NULL;
++    int saslprep_len = 0;
++    int rc;
++    char *gs_result;
++
++    rc = pdf_saslprep(Password, Len, &saslprep_result, &saslprep_len);
++    if (rc == 1) {
++        /* Soft error — fall back to original password, matching the
++         * original stringprep behavior for error codes < 100 */
++        *NewPassword = Password;
++        *NewLen = Len;
++        return 0;
++    }
++    if (rc < 0) {
++        /* Hard error (NFKC failure or memory error) */
+         return_error(gs_error_ioerror);
+     }
+ 
+-    *NewLen = strlen((char *)buffer);
+-    *NewPassword = (char *)buffer;
++    /* Success — copy malloc'd result to gs-managed memory */
++    gs_result = (char *)gs_alloc_bytes(ctx->memory, saslprep_len, "saslprep result");
++    if (gs_result == NULL) {
++        free(saslprep_result);
++        return_error(gs_error_VMerror);
++    }
++    memcpy(gs_result, saslprep_result, saslprep_len);
++    free(saslprep_result);
+ 
++    *NewPassword = gs_result;
++    *NewLen = saslprep_len;
+     return 0;
+-
+ }
++
+ #endif
+ 
+ static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int KeyLen)
+@@ -214,12 +206,12 @@ static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int
+     /* From the original code in Resource/Init/pdf_sec.ps:
+      * Step 1.
+      * If the .saslprep operator isn't available (because ghostscript
+-     * wasn't built with libidn support), just skip this step.  ASCII
++     * wasn't built with libidn2 support), just skip this step.  ASCII
+      * passwords will still work fine, and even most non-ASCII passwords
+      * will be okay; any non-ASCII passwords that fail will produce a
+      * warning from pdf_process_Encrypt.
+      */
+-#ifdef HAVE_LIBIDN
++#ifdef HAVE_LIBIDN2
+     code = apply_sasl(ctx, Password, Len, &UTF8_Password, &NewLen);
+     if (code < 0)
+         return code;
+@@ -303,10 +295,11 @@ static int check_user_password_R5(pdf_context *ctx, char *Password, int Len, int
+ error:
+     pdfi_countdown(Key);
+     gs_free_object(ctx->memory, Test, "R5 password test");
+-#ifdef HAVE_LIBIDN
++#ifdef HAVE_LIBIDN2
+     if (UTF8_Password != Password)
+         gs_free_object(ctx->memory, UTF8_Password, "free sasl result");
+ #endif
++
+     return code;
+ }
+ 
+@@ -615,12 +608,12 @@ static int check_owner_password_R5(pdf_context *ctx, char *Password, int Len, in
+     /* From the original code in Resource/Init/pdf_sec.ps:
+      * Step 1.
+      * If the .saslprep operator isn't available (because ghostscript
+-     * wasn't built with libidn support), just skip this step.  ASCII
++     * wasn't built with libidn2 support), just skip this step.  ASCII
+      * passwords will still work fine, and even most non-ASCII passwords
+      * will be okay; any non-ASCII passwords that fail will produce a
+      * warning from pdf_process_Encrypt.
+      */
+-#ifdef HAVE_LIBIDN
++#ifdef HAVE_LIBIDN2
+     code = apply_sasl(ctx, Password, Len, &UTF8_Password, &NewLen);
+     if (code < 0)
+         return code;
+@@ -708,10 +701,11 @@ static int check_owner_password_R5(pdf_context *ctx, char *Password, int Len, in
+ error:
+     pdfi_countdown(Key);
+     gs_free_object(ctx->memory, Test, "R5 password test");
+-#ifdef HAVE_LIBIDN
++#ifdef HAVE_LIBIDN2
+     if (UTF8_Password != Password)
+         gs_free_object(ctx->memory, UTF8_Password, "free sasl result");
+ #endif
++
+     return code;
+ }
+ 
+diff --git a/pdf/pdf_utf8.c b/pdf/pdf_utf8.c
+index 88a31ec..a58610b 100644
+--- a/pdf/pdf_utf8.c
++++ b/pdf/pdf_utf8.c
+@@ -27,45 +27,97 @@
+ #include "pdf_types.h"
+ #include "pdf_stack.h"
+ 
+-#ifdef HAVE_LIBIDN
+-#  include <stringprep.h>
++#ifdef HAVE_LIBIDN2
++#  include <idn2.h>
+ #  include <errno.h>
++#  include <iconv.h>
++#  include <langinfo.h>
++#  include <locale.h>
++#  include <stdlib.h>
+ /* Convert a string from the current locale's character set to UTF-8.
++ * Uses iconv (POSIX standard, part of glibc) to perform the conversion,
++ * replacing the former stringprep_locale_to_utf8() call that was lost
++ * when migrating from libidn to libidn2.
+  * <string> .locale_to_utf8 <string> */
+ int
+ locale_to_utf8(pdf_context *ctx, pdf_string *input, pdf_string **output)
+ {
+-    char *out = NULL;
++    iconv_t cd;
++    const char *codeset;
++    char *inbuf, *outbuf;
++    size_t inbytes, outbytes, outlen;
++    char *utf8buf = NULL;
+     int code;
+ 
+-    out = stringprep_locale_to_utf8((const char *)input->data);
+-    if (out == NULL) {
+-        /* This function is intended to be used on strings whose
+-         * character set is unknown, so it's not an error if the
+-         * input contains invalid characters.  Just return the input
+-         * string unchanged.
+-         *
+-         * Sadly, EINVAL from stringprep_locale_to_utf8 can mean
+-         * either an invalid character set conversion (which we care
+-         * about), or an incomplete input string (which we don't).
+-         * For now, we ignore EINVAL; the right solution is probably
+-         * to not use stringprep_locale_to_utf8, and just call iconv
+-         * by hand. */
+-        if (errno == EILSEQ || errno == EINVAL)
+-            return 0;
+-
+-        /* Other errors (like ENFILE) are real errors, which we
+-         * want to return to the user. */
+-        return_error(gs_error_ioerror);
++    *output = NULL;
++
++    setlocale(LC_CTYPE, "");
++#ifdef CODESET
++    codeset = nl_langinfo(CODESET);
++#else
++    codeset = "UTF-8";
++#endif
++
++    /* If the locale is already UTF-8 (or "C"), just copy the input. */
++    if (codeset == NULL || strcmp(codeset, "UTF-8") == 0 ||
++        strcmp(codeset, "C") == 0 || strcmp(codeset, "ANSI_X3.4-1968") == 0) {
++        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
++        if (code < 0)
++            return code;
++        pdfi_countup(*output);
++        memcpy((*output)->data, input->data, input->length);
++        return 0;
+     }
+ 
+-    code = pdfi_object_alloc(ctx, PDF_STRING, strlen(out), (pdf_obj **)output);
+-    if (code < 0)
++    cd = iconv_open("UTF-8", codeset);
++    if (cd == (iconv_t)-1) {
++        /* Cannot open converter; fall back to copying the input unchanged. */
++        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
++        if (code < 0)
++            return code;
++        pdfi_countup(*output);
++        memcpy((*output)->data, input->data, input->length);
++        return 0;
++    }
++
++    /* Allocate output buffer: worst case is 4x expansion for UTF-8. */
++    outlen = input->length * 4 + 1;
++    utf8buf = (char *)malloc(outlen);
++    if (utf8buf == NULL) {
++        iconv_close(cd);
++        return_error(gs_error_VMerror);
++    }
++
++    inbuf = (char *)input->data;
++    inbytes = input->length;
++    outbuf = utf8buf;
++    outbytes = outlen;
++
++    if (iconv(cd, &inbuf, &inbytes, &outbuf, &outbytes) == (size_t)-1) {
++        /* Conversion error (e.g. invalid sequence); fall back to
++         * copying the input unchanged, matching the original
++         * stringprep_locale_to_utf8 behaviour on EILSEQ/EINVAL. */
++        free(utf8buf);
++        iconv_close(cd);
++        code = pdfi_object_alloc(ctx, PDF_STRING, input->length, (pdf_obj **)output);
++        if (code < 0)
++            return code;
++        pdfi_countup(*output);
++        memcpy((*output)->data, input->data, input->length);
++        return 0;
++    }
++
++    iconv_close(cd);
++    outlen = outlen - outbytes;  /* actual bytes written */
++
++    code = pdfi_object_alloc(ctx, PDF_STRING, outlen, (pdf_obj **)output);
++    if (code < 0) {
++        free(utf8buf);
+         return code;
++    }
+     pdfi_countup(*output);
+-    memcpy((*output)->data, out, strlen(out));
+-
+-    free(out);
++    memcpy((*output)->data, utf8buf, outlen);
++    free(utf8buf);
+     return 0;
+ }
+ #else
+@@ -125,4 +177,4 @@ locale_to_utf8(pdf_context *ctx, pdf_string *input, pdf_string **output)
+     return 0;
+ }
+ #endif /* _WINDOWS_ */
+-#endif /* HAVE_LIBIDN */
++#endif /* HAVE_LIBIDN2 */
+diff --git a/psi/zutf8.c b/psi/zutf8.c
+index 69c3dc5..db9bcea 100644
+--- a/psi/zutf8.c
++++ b/psi/zutf8.c
+@@ -26,16 +26,23 @@
+ #include "errno_.h"
+ #include "string_.h"
+ #include "store.h"
+-#include <stringprep.h>
++#include <idn2.h>
++#include <iconv.h>
++#include <langinfo.h>
++#include <locale.h>
++#include <stdlib.h>
+ 
+ /* Convert a string from the current locale's character set to UTF-8.
++ * Uses iconv (POSIX standard, part of glibc) to perform the conversion,
++ * replacing the former stringprep_locale_to_utf8() call that was lost
++ * when migrating from libidn to libidn2.
+  * <string> .locale_to_utf8 <string> */
+ static int
+ zlocale_to_utf8(i_ctx_t *i_ctx_p)
+ {
+     os_ptr op = osp;
+     char *input;
+-    char *output;
++    char *output = NULL;
+     int code;
+ 
+     check_op(1);
+@@ -44,30 +51,70 @@ zlocale_to_utf8(i_ctx_t *i_ctx_p)
+     if (input == 0)
+         return_error(gs_error_VMerror);
+ 
+-    output = stringprep_locale_to_utf8(input);
+-    ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
+-    if (output == 0) {
+-        /* This function is intended to be used on strings whose
+-         * character set is unknown, so it's not an error if the
+-         * input contains invalid characters.  Just return the input
+-         * string unchanged.
+-         *
+-         * Sadly, EINVAL from stringprep_locale_to_utf8 can mean
+-         * either an invalid character set conversion (which we care
+-         * about), or an incomplete input string (which we don't).
+-         * For now, we ignore EINVAL; the right solution is probably
+-         * to not use stringprep_locale_to_utf8, and just call iconv
+-         * by hand. */
+-        if (errno == EILSEQ || errno == EINVAL)
+-            return 0;
+-
+-        /* Other errors (like ENFILE) are real errors, which we
+-         * want to return to the user. */
+-        return_error(gs_error_ioerror);
++    {
++        iconv_t cd;
++        const char *codeset;
++        char *inbuf, *outbuf;
++        size_t inbytes, outbytes, outlen;
++        size_t input_len = strlen(input);
++
++        setlocale(LC_CTYPE, "");
++#ifdef CODESET
++        codeset = nl_langinfo(CODESET);
++#else
++        codeset = "UTF-8";
++#endif
++
++        /* If the locale is already UTF-8 (or "C"), just return the input. */
++        if (codeset == NULL || strcmp(codeset, "UTF-8") == 0 ||
++            strcmp(codeset, "C") == 0 ||
++            strcmp(codeset, "ANSI_X3.4-1968") == 0) {
++            code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
++            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
++            return code;
++        }
++
++        cd = iconv_open("UTF-8", codeset);
++        if (cd == (iconv_t)-1) {
++            /* Cannot open converter; fall back to returning input unchanged. */
++            code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
++            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
++            return code;
++        }
++
++        outlen = input_len * 4 + 1;
++        output = (char *)malloc(outlen);
++        if (output == NULL) {
++            iconv_close(cd);
++            ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
++            return_error(gs_error_VMerror);
++        }
++
++        inbuf = input;
++        inbytes = input_len;
++        outbuf = output;
++        outbytes = outlen;
++
++        if (iconv(cd, &inbuf, &inbytes, &outbuf, &outbytes) == (size_t)-1) {
++            /* Conversion error; fall back to returning input unchanged,
++             * matching the original stringprep_locale_to_utf8 behaviour
++             * on EILSEQ/EINVAL. */
++            free(output);
++            output = NULL;
++            iconv_close(cd);
++        } else {
++            iconv_close(cd);
++            output[outlen - outbytes] = '\0';
++        }
+     }
+ 
+-    code = string_to_ref(output, op, iimemory, "locale_to_utf8 output");
+-    free(output);
++    if (output != NULL) {
++        code = string_to_ref(output, op, iimemory, "locale_to_utf8 output");
++        free(output);
++    } else {
++        code = string_to_ref(input, op, iimemory, "locale_to_utf8 output");
++    }
++    ifree_string((byte *)input, r_size(op) + 1, "locale_to_utf8 input");
+     if (code < 0)
+         return code;
+ 

@@ -1,3 +1,17 @@
+ghostscript (10.05.1~dfsg-3deepin7) unstable; urgency=medium
+
+  * feat: migrate libidn12 dependency to libidn2-0
+    - Add debian/patches/2013_migrate_libidn_to_libidn2.patch:
+      + Replace libidn (libidn12) with libidn2 for locale_to_utf8 conversion
+      + Manually implement SASLprep (RFC 4013) with full RFC 3454 table
+        support, referencing libidn source (LGPL-3+/GPL-2+, AGPL-3 compatible)
+      + Use libunistring for NFKC normalization and Unicode category checks
+      + No new runtime dependencies; libunistring already ships with libidn2
+    - Update debian/control Build-Depends: libidn-dev -> libidn2-dev,
+      add libunistring-dev (build-time only)
+
+ -- liuli <liuli@uniontech.com>  Wed, 26 Nov 2026 11:45:00 +0800
+
 ghostscript (10.05.1~dfsg-3deepin6) unstable; urgency=medium
 
   * fix(cve): CVE-2026-110133 (unknown) - Bug 709573: Disable the old
